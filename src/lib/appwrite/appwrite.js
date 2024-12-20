@@ -91,20 +91,17 @@ export const fetchAllVocabulary = async (lastId = null) => {
   }
 };
 
-
 export const getAllImages = async () => {
   try {
     const response = await databases.listDocuments(
       APPWRITE_DATABASE_ID,
       APPWRITE_IMAGES_COLLECTION_ID
     );
-    console.log('Appwrite Response:', response); // Log the full response
-    const imageUrls = response.documents.map(doc => doc.images_url); // Changed to `images_url`
-    console.log('Image URLs:', imageUrls); // Log the image URLs
+    const imageUrls = response.documents.map(doc => doc.images_url);
+    console.log('Image URLs:', imageUrls);
     return imageUrls;
   } catch (error) {
     console.error('Error fetching images from Appwrite:', error);
     throw error;
   }
 };
-

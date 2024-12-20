@@ -4,14 +4,17 @@
     "slug": "eps-vocabulary",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets//icon.png",
+    "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
-    "newArchEnabled": true,
+    "newArchEnabled": false,
     "splash": {
       "image": "./assets/splash.png",
       "resizeMode": "contain",
       "backgroundColor": "#ffffff"
     },
+    "assetBundlePatterns": [
+      "**/*"
+    ],
     "ios": {
       "supportsTablet": true
     },
@@ -20,14 +23,12 @@
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#ffffff"
       },
-      "package": "com.jakirkhan.epsvocabulary"
+      "package": "com.jakirkhan.epsvocabulary",
+      "versionCode": 1
     },
     "web": {
       "favicon": "./assets/favicon.png"
     },
-    "assetBundlePatterns": [
-      "assets/**/*"
-    ],
     "extra": {
       "eas": {
         "projectId": "38fcacfd-d564-4b03-971d-1300a2f91257"

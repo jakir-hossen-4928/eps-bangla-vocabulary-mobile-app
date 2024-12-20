@@ -1,211 +1,241 @@
-import React, { useState, useContext, useCallback, memo } from 'react';
-import { View, StyleSheet, FlatList, Text, TouchableOpacity, Share, Alert, RefreshControl } from 'react-native';
-import * as Clipboard from 'expo-clipboard';
-import * as Speech from 'expo-speech';
-import { Feather, FontAwesome, MaterialIcons, MaterialCommunityIcons } from '@expo/vector-icons';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import { FavoritesContext } from '../lib/Context/FavoritesContext';
+import React, { useState, useContext, useCallback, memo } from "react";
+import {
+  View,
+  Text,
+  TouchableOpacity,
+  Share,
+  Alert,
+  RefreshControl,
+  FlatList,
+  StyleSheet,
+} from "react-native";
+import * as Clipboard from "expo-clipboard";
+import * as Speech from "expo-speech";
+import { Feather, FontAwesome, MaterialIcons, MaterialCommunityIcons } from "@expo/vector-icons";
+import { SafeAreaView } from "react-native-safe-area-context";
+import { FavoritesContext } from "../lib/Context/FavoritesContext";
 
-const ResultCard = ({ searchResult, refreshing, onRefresh }) => {
+const ActionButton = memo(({ onPress, icon: Icon, name, color, size = 24 }) => (
+  <TouchableOpacity onPress={onPress} style={styles.actionButton}>
+    <Icon name={name} size={size} color={color} />
+  </TouchableOpacity>
+));
+
+const TranslationItem = memo(({
+  item,
+  index,
+  isFavorite,
+  copiedText,
+  speakingIndex,
+  onCopy,
+  onToggleFavorite,
+  onShare,
+  onSpeak,
+}) => (
+  <View style={styles.itemCard}>
+    <View style={styles.translationContent}>
+      <Text style={styles.languageLabel}>Bangla</Text>
+      <Text style={styles.translationText}>{item.bangla}</Text>
+      <Text style={styles.languageLabel}>Korean</Text>
+      <Text style={styles.translationText}>{item.korean}</Text>
+    </View>
+
+    <View style={styles.actionContainer}>
+      <ActionButton
+        onPress={() => onCopy(item.bangla, item.korean, index)}
+        icon={Feather}
+        name="copy"
+        color="#757575"
+      />
+      <ActionButton
+        onPress={() => onToggleFavorite(item)}
+        icon={MaterialIcons}
+        name={isFavorite ? "favorite" : "favorite-border"}
+        color={isFavorite ? "#FF4081" : "#757575"}
+      />
+      <ActionButton
+        onPress={() => onShare(item.bangla, item.korean)}
+        icon={FontAwesome}
+        name="share-square-o"
+        color="#757575"
+      />
+      <ActionButton
+        onPress={() => onSpeak(item.korean, index)}
+        icon={FontAwesome}
+        name={speakingIndex === index ? "volume-up" : "volume-down"}
+        color={speakingIndex === index ? "#2196F3" : "#757575"}
+      />
+    </View>
+
+    {copiedText[index] && (
+      <Text style={styles.copiedMessage}>{copiedText[index]}</Text>
+    )}
+  </View>
+));
+
+const ResultCard = ({ searchResult = [], refreshing = false, onRefresh = () => {} }) => {
   const { favorites = [], toggleFavorite } = useContext(FavoritesContext);
-
-  // State to manage copied text message for each item
   const [copiedText, setCopiedText] = useState({});
   const [speakingIndex, setSpeakingIndex] = useState(null);
 
-  const copyToClipboard = useCallback((text, index) => {
-    Clipboard.setString(text);
-    setCopiedText(prev => ({ ...prev, [index]: 'Copied to clipboard!' }));
+  const copyToClipboard = useCallback(async (bangla, korean, index) => {
+    const text = `Bangla: ${bangla}\nKorean: ${korean}`;
+    await Clipboard.setStringAsync(text);
+    setCopiedText((prev) => ({ ...prev, [index]: "Copied to clipboard!" }));
     setTimeout(() => {
-      setCopiedText(prev => ({ ...prev, [index]: '' }));
+      setCopiedText((prev) => ({ ...prev, [index]: "" }));
     }, 2000);
   }, []);
 
-  const shareContent = useCallback(async (text) => {
+  const shareContent = useCallback(async (bangla, korean) => {
     try {
-      const result = await Share.share({ message: text });
-      if (result.action === Share.sharedAction) {
-        if (result.activityType) {
-          console.log('Shared via:', result.activityType);
-        } else {
-          console.log('Shared');
-        }
-      } else if (result.action === Share.dismissedAction) {
-        console.log('Dismissed');
-      }
+      const text = `Bangla: ${bangla}\nKorean: ${korean}`;
+      await Share.share({ message: text });
     } catch (error) {
-      Alert.alert('Error', 'Error sharing content');
-      console.error('Error sharing:', error.message);
+      Alert.alert("Error", "Unable to share content");
     }
   }, []);
-
-  const toggleFavoriteHandler = useCallback((item) => {
-    toggleFavorite(item);
-  }, [toggleFavorite]);
 
   const speakText = useCallback((text, index) => {
     if (speakingIndex === index) {
       Speech.stop();
       setSpeakingIndex(null);
-    } else {
-      setSpeakingIndex(index);
-      Speech.speak(text, {
-        language: 'ko-KR',
-        voice: 'ko-kr-x-kfn-local',
-        pitch: 1.1,
-        rate: 0.95,
-        onDone: () => setSpeakingIndex(null),
-        onStopped: () => setSpeakingIndex(null),
-        onError: (error) => {
-          console.error('Speech error:', error);
-          setSpeakingIndex(null);
-        },
-      });
+      return;
     }
+
+    setSpeakingIndex(index);
+    Speech.speak(text, {
+      language: "ko-KR",
+      voice: "ko-kr-x-kfn-local",
+      pitch: 1.1,
+      rate: 0.95,
+      onDone: () => setSpeakingIndex(null),
+      onStopped: () => setSpeakingIndex(null),
+      onError: () => {
+        setSpeakingIndex(null);
+        Alert.alert("Error", "Unable to play audio");
+      },
+    });
   }, [speakingIndex]);
 
-  const renderItem = useCallback(({ item, index }) => {
-    const textToCopy = `Bangla: ${item.bangla}\nKorean: ${item.korean}`;
-    const isFavorite = favorites.some(fav => fav.bangla === item.bangla && fav.korean === item.korean);
+  const renderItem = useCallback(
+    ({ item, index }) => {
+      const isFavorite = favorites.some(
+        (fav) => fav.bangla === item.bangla && fav.korean === item.korean
+      );
 
+      return (
+        <TranslationItem
+          item={item}
+          index={index}
+          isFavorite={isFavorite}
+          copiedText={copiedText}
+          speakingIndex={speakingIndex}
+          onCopy={copyToClipboard}
+          onToggleFavorite={toggleFavorite}
+          onShare={shareContent}
+          onSpeak={speakText}
+        />
+      );
+    },
+    [favorites, copiedText, speakingIndex, copyToClipboard, toggleFavorite, shareContent, speakText]
+  );
+
+  if (!searchResult.length) {
     return (
-      <SafeAreaView>
-        <View style={styles.itemContainer}>
-          <Text style={styles.itemText}>{textToCopy}</Text>
-          <View style={styles.iconContainer}>
-            <TouchableOpacity onPress={() => copyToClipboard(textToCopy, index)}>
-              <Feather name="copy" size={24} color="white" style={styles.icon} />
-            </TouchableOpacity>
-            <TouchableOpacity onPress={() => toggleFavoriteHandler(item)}>
-              {isFavorite ? (
-                <MaterialIcons name="done-outline" size={24} color="white" style={styles.favoriteCheckIcon} />
-              ) : (
-                <MaterialCommunityIcons name="heart-plus" size={24} color="white" style={styles.favoriteIcon} />
-              )}
-            </TouchableOpacity>
-            <TouchableOpacity onPress={() => shareContent(textToCopy)}>
-              <FontAwesome name="share-square-o" size={24} color="white" style={styles.icon} />
-            </TouchableOpacity>
-            <TouchableOpacity onPress={() => speakText(item.korean, index)}>
-              {speakingIndex === index ? (
-                <FontAwesome name="volume-up" size={24} color="white" style={styles.icon} />
-              ) : (
-                <Feather name="volume-1" size={24} color="white" style={styles.icon} />
-              )}
-            </TouchableOpacity>
-          </View>
-          {copiedText[index] ? (
-            <Text style={styles.copiedText}>{copiedText[index]}</Text>
-          ) : null}
-        </View>
-      </SafeAreaView>
+      <View style={styles.emptyContainer}>
+        <Text style={styles.emptyText}>
+          {/* To get started, type a word or phrase in the search bar */}
+        </Text>
+      </View>
     );
-  }, [favorites, copiedText, speakingIndex, copyToClipboard, toggleFavoriteHandler, shareContent, speakText]);
+  }
 
   return (
-    searchResult.length > 0 && (
-      <SafeAreaView style={styles.safeArea}>
-        <View style={styles.container}>
-          <FlatList
-            data={searchResult}
-            renderItem={renderItem}
-            keyExtractor={(item) => item.$id}
-            showsVerticalScrollIndicator={false}
-            contentContainerStyle={styles.listContainer}
-            refreshControl={
-              <RefreshControl
-                refreshing={refreshing}
-                onRefresh={onRefresh}
-                colors={['#101010']}
-                tintColor="#101010"
-              />
-            }
-            ListEmptyComponent={<Text style={styles.emptyText}>No results found</Text>}
+    <SafeAreaView style={styles.safeArea}>
+      <FlatList
+        data={searchResult}
+        renderItem={renderItem}
+        keyExtractor={(item) => item.$id}
+        showsVerticalScrollIndicator={false}
+        contentContainerStyle={styles.listContainer}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={onRefresh}
+            colors={["#3B82F6"]}
+            tintColor="#3B82F6"
           />
-        </View>
-      </SafeAreaView>
-    )
+        }
+      />
+    </SafeAreaView>
   );
 };
 
 const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
-    backgroundColor: '#f0f0f0',
-  },
-  container: {
-    flex: 1,
-    backgroundColor: '#fff',
-    borderRadius: 12,
-    padding: 16,
-    margin: 10,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 5 },
-    shadowOpacity: 0.2,
-    shadowRadius: 8,
-    elevation: 4,
-  },
-  itemContainer: {
-    padding: 10,
-    borderBottomWidth: 1,
-    borderBottomColor: '#ccc',
-  },
-  itemText: {
-    fontSize: 18,
-    marginBottom: 10,
-  },
-  iconContainer: {
-    flexDirection: 'row',
-    justifyContent: 'space-around',
-    marginTop: 10,
-  },
-  icon: {
-    padding: 10,
-    backgroundColor: '#101010',
-    borderRadius: 50,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.3,
-    shadowRadius: 4,
-    elevation: 2,
+    backgroundColor: "#F3F4F6",
   },
   listContainer: {
-    flexGrow: 1,
+    padding: 16,
+    paddingBottom: 32,
+  },
+  itemCard: {
+    backgroundColor: "#FFFFFF",
+    borderRadius: 16,
+    padding: 16,
+    marginBottom: 16,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 8,
+    elevation: 3,
+  },
+  translationContent: {
+    marginBottom: 16,
+  },
+  languageLabel: {
+    fontSize: 14,
+    fontWeight: "600",
+    color: "#6B7280",
+    marginBottom: 4,
+  },
+  translationText: {
+    fontSize: 18,
+    color: "#1F2937",
+    marginBottom: 12,
+  },
+  actionContainer: {
+    flexDirection: "row",
+    justifyContent: "space-around",
+    borderTopWidth: 1,
+    borderTopColor: "#E5E7EB",
+    paddingTop: 12,
+  },
+  actionButton: {
+    backgroundColor: "transparent",
+    padding: 10,
+    borderRadius: 12,
+  },
+  copiedMessage: {
+    textAlign: "center",
+    marginTop: 8,
+    color: "#059669",
+    fontSize: 14,
+    fontWeight: "500",
+  },
+  emptyContainer: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    padding: 16,
   },
   emptyText: {
-    textAlign: 'center',
-    marginTop: 20,
-    color: '#888',
     fontSize: 16,
-  },
-  favoriteIcon: {
-    padding: 10,
-    backgroundColor: '#101010',
-    borderRadius: 50,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.3,
-    shadowRadius: 4,
-    elevation: 2,
-    color: '#ffffff',
-  },
-  favoriteCheckIcon: {
-    padding: 10,
-    backgroundColor: '#101010',
-    borderRadius: 50,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.3,
-    shadowRadius: 4,
-    elevation: 2,
-    color: '#ffffff',
-  },
-  copiedText: {
-    textAlign: 'center',
-    marginTop: 5,
-    color: '#101010',
-    fontSize: 14,
+    color: "#6B7280",
+    textAlign: "center",
   },
 });
 
-export default memo(ResultCard);
+export default ResultCard;

@@ -1,21 +1,22 @@
-import React, { useState, useEffect, useContext, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useMemo, useRef, useContext } from "react";
 import {
   View,
   Text,
   StyleSheet,
   FlatList,
-  TouchableWithoutFeedback,
+  TouchableOpacity,
   Alert,
   ActivityIndicator,
   RefreshControl,
   SafeAreaView,
   Keyboard,
-  TouchableOpacity,
+  Platform,
+  Animated,
 } from "react-native";
 import { SearchBar } from "react-native-elements";
 import { fetchAllVocabulary } from "../lib/appwrite/appwrite";
 import NetInfo from "@react-native-community/netinfo";
-import { FavoritesContext } from "../lib/Context/FavoritesContext";
+import { FavoritesContext, useFavorites } from "../lib/Context/FavoritesContext";
 import Loading from "../Components/Loading";
 import debounce from "lodash/debounce";
 import * as Speech from "expo-speech";
@@ -25,6 +26,76 @@ import {
   MaterialIcons,
   MaterialCommunityIcons,
 } from "@expo/vector-icons";
+
+// Constants
+const BATCH_SIZE = 20;
+const DEBOUNCE_DELAY = 300;
+const ITEM_HEIGHT = 100; // Approximate height of each item
+
+const VocabularyItem = React.memo(({
+  item,
+  index,
+  isInFavorites,
+  speakingIndex,
+  onToggleFavorite,
+  onSpeak
+}) => {
+  const scaleAnim = useRef(new Animated.Value(1)).current;
+
+  const handlePress = useCallback(() => {
+    Animated.sequence([
+      Animated.timing(scaleAnim, {
+        toValue: 0.95,
+        duration: 100,
+        useNativeDriver: true,
+      }),
+      Animated.timing(scaleAnim, {
+        toValue: 1,
+        duration: 100,
+        useNativeDriver: true,
+      }),
+    ]).start();
+    onSpeak(item.korean, index);
+  }, [onSpeak, item, index]);
+
+  return (
+    <Animated.View style={[styles.itemContainer, { transform: [{ scale: scaleAnim }] }]}>
+      <TouchableOpacity
+        activeOpacity={0.7}
+        onPress={handlePress}
+        style={styles.item}
+      >
+        <View style={styles.textContainer}>
+          <Text style={styles.koreanText}>{item.korean}</Text>
+          <Text style={styles.banglaText}>{item.bangla}</Text>
+        </View>
+        <View style={styles.iconContainer}>
+          <TouchableOpacity
+            onPress={() => onToggleFavorite(item)}
+            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+          >
+            {isInFavorites ? (
+              <MaterialIcons name="favorite" size={24} color="#FF4081" />
+            ) : (
+              <MaterialIcons name="favorite-border" size={24} color="#757575" />
+            )}
+          </TouchableOpacity>
+          <TouchableOpacity
+            onPress={handlePress}
+            style={styles.speakerButton}
+            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+          >
+            {speakingIndex === index ? (
+              <FontAwesome name="volume-up" size={24} color="#2196F3" />
+            ) : (
+              <Feather name="volume-1" size={24} color="#757575" />
+            )}
+          </TouchableOpacity>
+        </View>
+      </TouchableOpacity>
+    </Animated.View>
+  );
+});
 
 const LibraryScreen = () => {
   const { favorites, toggleFavorite } = useContext(FavoritesContext);
@@ -36,246 +107,228 @@ const LibraryScreen = () => {
   const [lastId, setLastId] = useState(null);
   const [isFetchingMore, setIsFetchingMore] = useState(false);
   const [speakingIndex, setSpeakingIndex] = useState(null);
+  const [isOffline, setIsOffline] = useState(false);
 
+  const flatListRef = useRef(null);
+  const searchTimeout = useRef(null);
+
+  // Network monitoring
   useEffect(() => {
-    initializeData();
-    checkInternetConnection();
     const unsubscribe = NetInfo.addEventListener((state) => {
+      setIsOffline(!state.isConnected);
       if (!state.isConnected) {
-        Alert.alert("No Internet", "Please check your internet connection.");
+        Alert.alert(
+          "No Internet Connection",
+          "Please check your internet connection and try again."
+        );
       }
     });
     return () => unsubscribe();
   }, []);
 
+  // Initial data fetch
   const initializeData = useCallback(async () => {
     try {
+      setIsLoading(true);
       const response = await fetchAllVocabulary();
-      const vocab = response.documents;
-      const uniqueVocab = filterUniqueVocabulary(vocab);
+      const uniqueVocab = filterUniqueVocabulary(response.documents);
       setVocabulary(uniqueVocab);
       setLastId(response.documents[response.documents.length - 1]?.$id);
-      setIsLoading(false);
     } catch (error) {
-      console.error("Error initializing vocabulary:", error);
+      console.error("Error fetching vocabulary:", error);
+      Alert.alert("Error", "Failed to load vocabulary. Please try again later.");
+    } finally {
       setIsLoading(false);
     }
   }, []);
 
-  const checkInternetConnection = useCallback(() => {
-    NetInfo.fetch().then((state) => {
-      if (!state.isConnected) {
-        Alert.alert("No Internet", "Please check your internet connection.");
-      }
-    });
+  useEffect(() => {
+    initializeData();
   }, []);
 
-  const onRefresh = useCallback(async () => {
-    setRefreshing(true);
-    await initializeData();
-    setRefreshing(false);
-  }, [initializeData]);
-
+  // Unique vocabulary filter
   const filterUniqueVocabulary = useCallback((vocab) => {
-    const uniqueItems = {};
+    const seen = new Set();
     return vocab.filter((item) => {
-      if (!uniqueItems[item.bangla] && !uniqueItems[item.korean]) {
-        uniqueItems[item.bangla] = true;
-        uniqueItems[item.korean] = true;
-        return true;
-      }
-      return false;
+      const key = item.$id || `${item.bangla}-${item.korean}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
     });
   }, []);
 
+  // Search handling
   const handleSearch = useCallback(
     (text) => {
-      const lowerCaseInput = text.toLowerCase().trim();
-      const exactMatch = vocabulary.filter(
-        (doc) =>
-          doc.bangla.toLowerCase() === lowerCaseInput ||
-          doc.korean.toLowerCase() === lowerCaseInput
-      );
-      const results = vocabulary.filter(
-        (doc) =>
-          doc.bangla.toLowerCase().includes(lowerCaseInput) ||
-          doc.korean.toLowerCase().includes(lowerCaseInput)
-      );
-      if (exactMatch.length > 0) {
-        setSearchResult(exactMatch);
-      } else if (results.length > 0) {
-        setSearchResult(results);
-      } else {
-        setSearchResult([]);
+      if (searchTimeout.current) {
+        clearTimeout(searchTimeout.current);
       }
+
+      const lowerCaseInput = text.toLowerCase().trim();
+
+      if (!lowerCaseInput) {
+        setSearchResult([]);
+        return;
+      }
+
+      searchTimeout.current = setTimeout(() => {
+        const results = vocabulary.filter(
+          (doc) =>
+            doc.bangla.toLowerCase().includes(lowerCaseInput) ||
+            doc.korean.toLowerCase().includes(lowerCaseInput)
+        );
+
+        setSearchResult(results);
+      }, DEBOUNCE_DELAY);
     },
     [vocabulary]
   );
 
-  const debouncedHandleSearch = useCallback(debounce(handleSearch, 300), [
-    handleSearch,
-  ]);
-
+  // Infinite scroll handling
   const loadMoreVocabulary = useCallback(async () => {
-    if (isFetchingMore) return;
-    setIsFetchingMore(true);
+    if (isFetchingMore || isOffline || searchResult.length > 0) return;
+
     try {
+      setIsFetchingMore(true);
       const response = await fetchAllVocabulary(lastId);
-      const moreVocab = response.documents;
-      setVocabulary((prevVocab) => [...prevVocab, ...moreVocab]);
-      setLastId(response.documents[response.documents.length - 1]?.$id);
+      if (response.documents.length > 0) {
+        const newVocab = filterUniqueVocabulary(response.documents);
+        setVocabulary(prev => [...prev, ...newVocab]);
+        setLastId(response.documents[response.documents.length - 1]?.$id);
+      }
     } catch (error) {
       console.error("Error loading more vocabulary:", error);
     } finally {
       setIsFetchingMore(false);
     }
-  }, [isFetchingMore, lastId]);
+  }, [isFetchingMore, lastId, isOffline, searchResult.length]);
 
-  const speakText = useCallback(
-    (text, index) => {
-      if (speakingIndex === index) {
-        Speech.stop();
+  // Text-to-speech handling
+  const speakText = useCallback((text, index) => {
+    if (speakingIndex === index) {
+      Speech.stop();
+      setSpeakingIndex(null);
+      return;
+    }
+
+    setSpeakingIndex(index);
+    Speech.speak(text, {
+      language: "ko-KR",
+      voice: "ko-kr-x-kfn-local",
+      pitch: 1.1,
+      rate: 0.95,
+      onDone: () => setSpeakingIndex(null),
+      onError: () => {
         setSpeakingIndex(null);
-      } else {
-        setSpeakingIndex(index);
-        Speech.speak(text, {
-          language: "ko-KR",
-          voice: "ko-kr-x-kfn-local",
-          pitch: 1.1,
-          rate: 0.95,
-          onDone: () => setSpeakingIndex(null),
-          onStopped: () => setSpeakingIndex(null),
-          onError: (error) => {
-            console.error("Speech error:", error);
-            setSpeakingIndex(null);
-          },
-        });
-      }
-    },
-    [speakingIndex]
+        Alert.alert("Error", "Failed to play pronunciation. Please try again.");
+      },
+    });
+  }, [speakingIndex]);
+
+  // Memoized data for FlatList
+  const listData = useMemo(() =>
+    searchResult.length > 0 ? searchResult : vocabulary,
+    [searchResult, vocabulary]
   );
 
-  const handleToggleFavorite = useCallback(
-    (item) => {
-      toggleFavorite(item);
-    },
-    [toggleFavorite]
-  );
+  // Pull-to-refresh handler
+  const handleRefresh = useCallback(async () => {
+    setRefreshing(true);
+    await initializeData();
+    setRefreshing(false);
+  }, [initializeData]);
 
-  const renderItem = useCallback(
-    ({ item, index }) => {
-      const isInFavorites = favorites.some(
-        (fav) => fav.bangla === item.bangla && fav.korean === item.korean
-      );
+  // Render item for FlatList
+  const renderItem = useCallback(({ item, index }) => {
+    const isInFavorites = favorites.some(
+      (fav) => fav.bangla === item.bangla && fav.korean === item.korean
+    );
 
-      const handleToggleFavorite = () => {
-        toggleFavorite(item);
-      };
+    return (
+      <VocabularyItem
+        item={item}
+        index={index}
+        isInFavorites={isInFavorites}
+        speakingIndex={speakingIndex}
+        onToggleFavorite={toggleFavorite}
+        onSpeak={speakText}
+      />
+    );
+  }, [favorites, speakingIndex, toggleFavorite, speakText]);
 
-      const handleSpeakText = () => {
-        speakText(item.korean, index);
-      };
+  // Empty list component
+  const EmptyList = useCallback(() => (
+    <View style={styles.emptyContainer}>
+      <MaterialCommunityIcons name="book-open-variant" size={64} color="#BDBDBD" />
+      <Text style={styles.emptyText}>
+        {inputValue ? "No results found" : "No vocabulary items available"}
+      </Text>
+    </View>
+  ), [inputValue]);
 
-      return (
-        <TouchableWithoutFeedback onPress={handleSpeakText}>
-          <View style={styles.item}>
-            <View style={styles.textContainer}>
-              <Text style={styles.title}>Bangla: {item.bangla}</Text>
-              <Text style={styles.title}>Korean: {item.korean}</Text>
-            </View>
-            <View style={styles.iconContainer}>
-              <TouchableOpacity onPress={handleToggleFavorite}>
-                {isInFavorites ? (
-                  <MaterialIcons
-                    name="done-outline"
-                    size={24}
-                    color="#101010"
-                    style={styles.favoriteCheckIcon}
-                  />
-                ) : (
-                  <MaterialCommunityIcons
-                    name="heart-plus"
-                    size={24}
-                    color="#101010"
-                    style={styles.favoriteIcon}
-                  />
-                )}
-              </TouchableOpacity>
-              <TouchableOpacity onPress={handleSpeakText}>
-                {speakingIndex === index ? (
-                  <FontAwesome
-                    name="volume-up"
-                    size={24}
-                    color="#101010"
-                    style={styles.volumeIcon}
-                  />
-                ) : (
-                  <Feather
-                    name="volume-1"
-                    size={24}
-                    color="#101010"
-                    style={styles.volumeIcon}
-                  />
-                )}
-              </TouchableOpacity>
-            </View>
-          </View>
-        </TouchableWithoutFeedback>
-      );
-    },
-    [favorites, toggleFavorite, speakingIndex, speakText]
-  );
-
-  const handleInputChange = useCallback(
-    (text) => {
-      setInputValue(text);
-      if (text.trim().length === 0) {
-        setSearchResult([]);
-      } else {
-        debouncedHandleSearch(text);
-      }
-    },
-    [debouncedHandleSearch]
-  );
+  if (isLoading) {
+    return <Loading />;
+  }
 
   return (
     <SafeAreaView style={styles.container}>
-      {isLoading ? (
-        <Loading />
-      ) : (
-        <>
-          <SearchBar
-            placeholder="Type here..."
-            onChangeText={handleInputChange}
-            value={inputValue}
-            lightTheme
-            round
-            containerStyle={styles.searchBarContainer}
-            inputContainerStyle={styles.searchBarInputContainer}
-            onClear={() => {
-              setInputValue("");
-              setSearchResult([]);
-              Keyboard.dismiss();
-            }}
-          />
-          <FlatList
-            data={searchResult.length > 0 ? searchResult : vocabulary}
-            renderItem={renderItem}
-            keyExtractor={(item) => item.$id}
-            onEndReached={loadMoreVocabulary}
-            onEndReachedThreshold={0.1}
-            showsVerticalScrollIndicator={false}
-            ListFooterComponent={
-              isFetchingMore ? (
-                <ActivityIndicator size="small" color="#101010" />
-              ) : null
-            }
-            refreshControl={
-              <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
-            }
-          />
-        </>
+      <SearchBar
+        placeholder="Search in Korean or Bangla..."
+        onChangeText={(text) => {
+          setInputValue(text);
+          handleSearch(text);
+        }}
+        value={inputValue}
+        platform={Platform.OS}
+        containerStyle={styles.searchBarContainer}
+        inputContainerStyle={styles.searchBarInputContainer}
+        onClear={() => {
+          setInputValue("");
+          setSearchResult([]);
+          Keyboard.dismiss();
+        }}
+        autoCorrect={false}
+      />
+
+      {isOffline && (
+        <View style={styles.offlineBanner}>
+          <MaterialIcons name="wifi-off" size={20} color="#fff" />
+          <Text style={styles.offlineText}>You are offline</Text>
+        </View>
       )}
+
+      <FlatList
+        ref={flatListRef}
+        data={listData}
+        renderItem={renderItem}
+        keyExtractor={(item, index) => item.$id || `${item.bangla}-${item.korean}-${index}`}
+        onEndReached={loadMoreVocabulary}
+        onEndReachedThreshold={0.5}
+        maxToRenderPerBatch={BATCH_SIZE}
+        windowSize={5}
+        removeClippedSubviews={true}
+        initialNumToRender={BATCH_SIZE}
+        getItemLayout={(data, index) => ({
+          length: ITEM_HEIGHT,
+          offset: ITEM_HEIGHT * index,
+          index,
+        })}
+        ListEmptyComponent={EmptyList}
+        ListFooterComponent={
+          isFetchingMore && (
+            <View style={styles.loadingFooter}>
+              <ActivityIndicator size="small" color="#2196F3" />
+            </View>
+          )
+        }
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={handleRefresh}
+            colors={["#2196F3"]}
+          />
+        }
+      />
     </SafeAreaView>
   );
 };
@@ -283,55 +336,84 @@ const LibraryScreen = () => {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    padding: 10,
-    backgroundColor: "#fff",
+    backgroundColor: "#F5F5F5",
+  },
+  itemContainer: {
+    margin: 8,
+    backgroundColor: "#FFFFFF",
+    borderRadius: 12,
+    elevation: 3,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
   },
   item: {
-    backgroundColor: "#f0f0f0",
-    padding: 20,
-    marginVertical: 8,
-    marginHorizontal: 8,
-    borderRadius: 10,
+    padding: 16,
     flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center", // Ensures icons are vertically centered
-    shadowColor: "#000",
-    shadowOffset: {
-      width: 0,
-      height: 2,
-    },
-    shadowOpacity: 0.25,
-    shadowRadius: 3.84,
-    elevation: 5,
+    alignItems: "center",
   },
   textContainer: {
     flex: 1,
   },
-  title: {
+  koreanText: {
     fontSize: 18,
-    color: "#101010",
+    fontWeight: "600",
+    color: "#212121",
+    marginBottom: 4,
+  },
+  banglaText: {
+    fontSize: 16,
+    color: "#757575",
+  },
+  iconContainer: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingLeft: 16,
+  },
+  speakerButton: {
+    marginLeft: 16,
   },
   searchBarContainer: {
     backgroundColor: "transparent",
     borderBottomWidth: 0,
     borderTopWidth: 0,
+    paddingHorizontal: 8,
+    marginBottom: 8,
   },
   searchBarInputContainer: {
-    backgroundColor: "#e0e0e0",
+    backgroundColor: "#FFFFFF",
+    borderRadius: 12,
   },
-  iconContainer: {
-    flexDirection: "row",
+  emptyContainer: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingTop: 64,
+  },
+  emptyText: {
+    marginTop: 16,
+    fontSize: 16,
+    color: "#757575",
+    textAlign: "center",
+  },
+  loadingFooter: {
+    paddingVertical: 16,
     alignItems: "center",
   },
-  favoriteIcon: {
-    marginLeft: 10,
+  offlineBanner: {
+    backgroundColor: "#FF5252",
+    padding: 8,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
   },
-  favoriteCheckIcon: {
-    marginLeft: 10,
-  },
-  volumeIcon: {
-    marginLeft: 10,
+  offlineText: {
+    color: "#FFFFFF",
+    marginLeft: 8,
+    fontSize: 14,
+    fontWeight: "500",
   },
 });
 
-export default LibraryScreen;
+export default React.memo(LibraryScreen);

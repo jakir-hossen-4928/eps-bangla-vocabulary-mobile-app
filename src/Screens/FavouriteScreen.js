@@ -4,116 +4,170 @@ import {
   Text,
   StyleSheet,
   FlatList,
-  TouchableWithoutFeedback,
+  TouchableOpacity,
   RefreshControl,
+  Animated,
+  Platform,
 } from 'react-native';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { FavoritesContext } from '../lib/Context/FavoritesContext';
 
-const FavouriteScreen = ({ navigation }) => {
+const AnimatedTouchable = Animated.createAnimatedComponent(TouchableOpacity);
+
+const FavoriteItem = React.memo(({ item, onRemove }) => {
+  const scale = React.useRef(new Animated.Value(1)).current;
+
+  const handlePress = useCallback(() => {
+    Animated.sequence([
+      Animated.spring(scale, {
+        toValue: 0.95,
+        useNativeDriver: true,
+        damping: 10,
+      }),
+      Animated.spring(scale, {
+        toValue: 1,
+        useNativeDriver: true,
+        damping: 10,
+      }),
+    ]).start();
+  }, [scale]);
+
+  const handleRemove = useCallback(() => {
+    Animated.spring(scale, {
+      toValue: 0,
+      useNativeDriver: true,
+      damping: 15,
+    }).start(() => onRemove(item));
+  }, [item, onRemove, scale]);
+
+  return (
+    <AnimatedTouchable
+      style={[styles.itemContainer, { transform: [{ scale }] }]}
+      onPress={handlePress}
+      activeOpacity={0.7}
+    >
+      <View style={styles.itemContent}>
+        <View style={styles.textContainer}>
+          <Text style={styles.koreanText}>{item.korean}</Text>
+          <Text style={styles.banglaText}>{item.bangla}</Text>
+          <Text style={styles.timestampText}>
+            {new Date(item.timestamp).toLocaleTimeString([], {
+              hour: '2-digit',
+              minute: '2-digit'
+            })}
+          </Text>
+        </View>
+        <TouchableOpacity
+          onPress={handleRemove}
+          hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+          style={styles.deleteButton}
+        >
+          <MaterialCommunityIcons name="delete-outline" size={24} color="#FF5252" />
+        </TouchableOpacity>
+      </View>
+    </AnimatedTouchable>
+  );
+});
+
+const CategoryHeader = React.memo(({ title, count }) => (
+  <View style={styles.categoryHeader}>
+    <Text style={styles.categoryTitle}>{title}</Text>
+    <View style={styles.countBadge}>
+      <Text style={styles.countText}>{count}</Text>
+    </View>
+  </View>
+));
+
+const EmptyState = React.memo(() => (
+  <View style={styles.emptyContainer}>
+    <MaterialCommunityIcons name="heart-outline" size={64} color="#BDBDBD" />
+    <Text style={styles.emptyTitle}>No Favorites Yet</Text>
+    <Text style={styles.emptySubtitle}>
+      Your favorite phrases will appear here
+    </Text>
+  </View>
+));
+
+const FavouriteScreen = () => {
   const { favorites, removeFavorite, loadFavorites } = useContext(FavoritesContext);
   const [refreshing, setRefreshing] = useState(false);
 
-  // Sort favorites once using useMemo to avoid unnecessary recalculations
-  const sortedFavorites = useMemo(() => {
-    return [...favorites].sort((a, b) => b.timestamp - a.timestamp);
-  }, [favorites]);
-
-  // Categorize favorites
-  const categorizeFavorites = (sortedFavorites) => {
+  const categorizedData = useMemo(() => {
+    const sorted = [...favorites].sort((a, b) => b.timestamp - a.timestamp);
     const categorized = {};
-    const today = new Date().setHours(0, 0, 0, 0);
-    const yesterday = new Date();
-    yesterday.setDate(yesterday.getDate() - 1);
-    yesterday.setHours(0, 0, 0, 0);
+    const now = new Date();
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+    const yesterday = today - 86400000;
 
-    sortedFavorites.forEach((item) => {
+    sorted.forEach((item) => {
       const itemDate = new Date(item.timestamp).setHours(0, 0, 0, 0);
+      let category;
 
       if (itemDate === today) {
-        if (!categorized["Today"]) {
-          categorized["Today"] = [];
-        }
-        categorized["Today"].push(item);
-      } else if (itemDate === yesterday.getTime()) {
-        if (!categorized["Yesterday"]) {
-          categorized["Yesterday"] = [];
-        }
-        categorized["Yesterday"].push(item);
+        category = "Today";
+      } else if (itemDate === yesterday) {
+        category = "Yesterday";
       } else {
-        const key = new Date(item.timestamp).toLocaleDateString();
-        if (!categorized[key]) {
-          categorized[key] = [];
-        }
-        categorized[key].push(item);
+        category = new Date(itemDate).toLocaleDateString('en-US', {
+          month: 'long',
+          day: 'numeric',
+          year: now.getFullYear() !== new Date(itemDate).getFullYear() ? 'numeric' : undefined
+        });
       }
+
+      if (!categorized[category]) {
+        categorized[category] = [];
+      }
+      categorized[category].push(item);
     });
 
-    return categorized;
-  };
+    return Object.entries(categorized).map(([category, items]) => ({
+      category,
+      data: items,
+      count: items.length,
+    }));
+  }, [favorites]);
 
-  const categorizedFavorites = useMemo(() => categorizeFavorites(sortedFavorites), [sortedFavorites]);
-
-  const onRefresh = useCallback(() => {
+  const handleRefresh = useCallback(async () => {
     setRefreshing(true);
-    loadFavorites();
-    setTimeout(() => {
-      setRefreshing(false);
-    }, 2000);
+    await loadFavorites();
+    setRefreshing(false);
   }, [loadFavorites]);
 
-  const renderFavoriteItem = useCallback(({ item }) => (
-    <TouchableWithoutFeedback>
-      <View style={styles.item}>
-        <View style={{ flex: 1 }}>
-          <Text style={styles.itemText}>Bangla: {item.bangla}</Text>
-          <Text style={styles.itemText}>Korean: {item.korean}</Text>
-        </View>
-        <TouchableWithoutFeedback onPress={() => removeFavorite(item)}>
-          <MaterialCommunityIcons
-            name="delete"
-            size={24}
-            color="black"
-            style={styles.removeIcon}
-          />
-        </TouchableWithoutFeedback>
-      </View>
-    </TouchableWithoutFeedback>
-  ), [removeFavorite]);
-
-  const renderCategory = ({ item }) => (
-    <View>
-      <Text style={styles.categoryHeading}>{item.category}</Text>
+  const renderCategory = useCallback(({ item }) => (
+    <View style={styles.categorySection}>
+      <CategoryHeader title={item.category} count={item.count} />
       <FlatList
         data={item.data}
-        renderItem={renderFavoriteItem}
-        keyExtractor={(item) => item.timestamp.toString()}
+        renderItem={({ item: favoriteItem }) => (
+          <FavoriteItem item={favoriteItem} onRemove={removeFavorite} />
+        )}
+        keyExtractor={item => item.timestamp.toString()}
         showsVerticalScrollIndicator={false}
+        scrollEnabled={false}
       />
     </View>
-  );
-
-  const categorizedData = useMemo(() => {
-    return Object.keys(categorizedFavorites).map((key) => ({
-      category: key,
-      data: categorizedFavorites[key],
-    }));
-  }, [categorizedFavorites]);
+  ), [removeFavorite]);
 
   return (
     <View style={styles.container}>
       <FlatList
         data={categorizedData}
         renderItem={renderCategory}
-        keyExtractor={(item) => item.category}
+        keyExtractor={item => item.category}
         showsVerticalScrollIndicator={false}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
-        ListEmptyComponent={() => (
-          <View style={styles.noFavoritesContainer}>
-            <Text style={styles.noFavorites}>No favorites added yet.</Text>
-          </View>
-        )}
-        contentContainerStyle={styles.scrollView}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={handleRefresh}
+            colors={['#2196F3']}
+          />
+        }
+        ListEmptyComponent={EmptyState}
+        contentContainerStyle={[
+          styles.listContent,
+          !categorizedData.length && styles.emptyListContent
+        ]}
       />
     </View>
   );
@@ -122,66 +176,94 @@ const FavouriteScreen = ({ navigation }) => {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: "#fff",
+    backgroundColor: '#F5F5F5',
   },
-  scrollView: {
-    padding: 20,
+  listContent: {
+    padding: 16,
   },
-  heading: {
-    fontSize: 20,
-    fontWeight: "bold",
-    marginBottom: 10,
-  },
-  categoryHeading: {
-    fontSize: 15,
-    fontWeight: "bold",
-    marginTop: 15,
-    marginBottom: 5,
-  },
-  item: {
-    backgroundColor: "#f0f0f0",
-    padding: 10,
-    marginBottom: 10,
-    borderRadius: 8,
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-  },
-  itemText: {
-    fontSize: 18,
+  emptyListContent: {
     flex: 1,
-    flexWrap: 'wrap',
-    color: '#101010',
   },
-  removeIcon: {
-    padding: 5,
-    color: '#101010',
+  categorySection: {
+    marginBottom: 24,
   },
-  noFavoritesContainer: {
-    alignItems: "center",
-    marginTop: 20,
+  categoryHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 12,
   },
-  noFavorites: {
+  categoryTitle: {
     fontSize: 18,
-    fontStyle: "italic",
+    fontWeight: '600',
+    color: '#212121',
   },
-  motivation: {
-    fontSize: 16,
-    marginVertical: 10,
+  countBadge: {
+    backgroundColor: '#E3F2FD',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 12,
+    marginLeft: 8,
   },
-  addButton: {
-    backgroundColor: "#2196F3",
-    padding: 10,
-    borderRadius: 8,
-  },
-  addButtonText: {
-    color: "#fff",
-    fontSize: 16,
-  },
-  timestamp: {
+  countText: {
     fontSize: 12,
-    color: "#888",
+    color: '#2196F3',
+    fontWeight: '500',
+  },
+  itemContainer: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 12,
+    marginBottom: 8,
+    elevation: 2,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.2,
+    shadowRadius: 2,
+  },
+  itemContent: {
+    padding: 16,
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  textContainer: {
+    flex: 1,
+  },
+  koreanText: {
+    fontSize: 18,
+    fontWeight: '500',
+    color: '#212121',
+    marginBottom: 4,
+  },
+  banglaText: {
+    fontSize: 16,
+    color: '#757575',
+  },
+  timestampText: {
+    fontSize: 12,
+    color: '#9E9E9E',
+    marginTop: 4,
+  },
+  deleteButton: {
+    padding: 8,
+    marginLeft: 8,
+  },
+  emptyContainer: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 32,
+  },
+  emptyTitle: {
+    fontSize: 20,
+    fontWeight: '600',
+    color: '#212121',
+    marginTop: 16,
+    marginBottom: 8,
+  },
+  emptySubtitle: {
+    fontSize: 16,
+    color: '#757575',
+    textAlign: 'center',
   },
 });
 
-export default FavouriteScreen;
+export default React.memo(FavouriteScreen);
